@@ -1,0 +1,1623 @@
+//+------------------------------------------------------------------+
+//|                        BTC_AI_EA_Professional_v1.mq5           |
+//|                    Copyright 2025, Professional AI Trading     |
+//|                                   Enhanced by Claude AI        |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025, Professional AI Trading EA"
+#property link      "https://github.com/professional-ai-trading"
+#property version   "3.00"
+#property strict
+
+#include <Trade\Trade.mqh>
+#include <Controls\Panel.mqh>
+
+//--- Input parameters
+input group    "=== 🤖 Claude AI Settings ==="
+input string   API_KEY = "YOUR_ANTHROPIC_API_KEY_HERE";  
+input int      AnalysisInterval = 30;                   
+input int      MinConfidenceLevel = 6;                   
+input bool     EnableDebugMode = true;                  
+input bool     UseAPIFallback = true;                    
+
+input group    "=== 📊 Trading Settings ==="
+input double   LotSize = 0.01;                          
+input double   MaxLotSize = 0.10;                       
+input int      MagicNumber = 330077;                    
+input double   RiskPercent = 3.0;                       
+input int      MaxTrades = 3;                           
+input double   MaxDailyLoss = 5.0;                      
+input double   MaxDailyProfit = 10.0;                   
+
+input group    "=== 🛡️ Advanced Risk Management ==="
+input bool     UseTrailingStop = true;                  
+input double   TrailingDistance = 50000;                
+input double   MinStopLoss = 30000;                     
+input double   MaxStopLoss = 200000;                    
+input bool     UseBreakEven = true;                     
+input double   MaxPortfolioHeat = 8.0;                  
+input bool     UseEmergencyProtocol = true;             
+input double   EmergencyDrawdownLimit = 15.0;           
+
+input group    "=== 📈 Multi-Timeframe Analysis ==="
+input bool     UseMultiTimeframe = true;                
+input bool     UseSentimentAnalysis = true;             
+input bool     UseVolumeAnalysis = true;                
+
+input group    "=== 🔔 Market Filters ==="
+input bool     UseNewsFilter = true;                    
+input bool     UseSpreadFilter = true;                  
+input double   MaxSpread = 2000;                        
+input bool     UseVolatilityFilter = true;              
+input double   MaxATRMultiplier = 3.0;                  
+
+input group    "=== ⏰ Time Settings ==="
+input bool     UseTradingHours = false;                 
+input string   TradingStartTime = "00:00";              
+input string   TradingEndTime = "23:59";                
+input bool     TradeOnFriday = true;                    
+                  
+
+//--- API Configuration
+#define API_URL "https://api.anthropic.com/v1/messages"
+#define API_VERSION "2023-06-01"
+#define MAX_RESPONSE_SIZE 8192
+
+//--- Global variables
+CTrade trade;
+datetime last_analysis_time = 0;
+datetime last_bar_time = 0;
+datetime last_ui_update = 0;
+string last_ai_response = "";
+int consecutive_api_errors = 0;
+bool api_available = true;
+double daily_profit = 0.0;
+double daily_loss = 0.0;
+datetime last_reset_date = 0;
+double session_start_balance = 0.0;
+bool emergency_mode = false;
+datetime emergency_start_time = 0;
+
+//--- Performance Analytics
+struct PerformanceStats {
+    int total_trades;
+    int winning_trades;
+    int losing_trades;
+    double win_rate;
+    double profit_factor;
+    double max_drawdown;
+    double current_drawdown;
+    double total_profit;
+    double ai_accuracy;
+    int correct_predictions;
+    int total_predictions;
+} stats;
+
+//--- Market Analysis
+struct MarketCondition {
+    string trend_direction;
+    double volatility_level;
+    string market_phase;
+    double sentiment_score;
+    bool news_impact;
+    double support_level;
+    double resistance_level;
+} market;
+
+//--- Indicator handles
+int ma_fast_handle, ma_slow_handle, rsi_handle, macd_handle, atr_handle, bb_handle;
+int ma_h4_handle, rsi_h4_handle, ma_d1_handle;
+double ma_fast[], ma_slow[], rsi[], macd_main[], macd_signal[], atr[], bb_upper[], bb_lower[];
+double ma_h4[], rsi_h4[], ma_d1[];
+
+//--- UI Objects
+string ui_objects[];
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    // Validate API key
+    if(StringLen(API_KEY) < 10 || API_KEY == "YOUR_ANTHROPIC_API_KEY_HERE")
+    {
+        Alert("🚨 Please set your Claude API key in the input parameters!");
+        return INIT_PARAMETERS_INCORRECT;
+    }
+    
+    // Initialize trade object
+    trade.SetExpertMagicNumber(MagicNumber);
+    trade.SetDeviationInPoints(100);
+    trade.SetTypeFilling(ORDER_FILLING_IOC);
+    
+    // Initialize indicators - Current timeframe
+    ma_fast_handle = iMA(_Symbol, PERIOD_CURRENT, 21, 0, MODE_EMA, PRICE_CLOSE);
+    ma_slow_handle = iMA(_Symbol, PERIOD_CURRENT, 55, 0, MODE_EMA, PRICE_CLOSE);
+    rsi_handle = iRSI(_Symbol, PERIOD_CURRENT, 14, PRICE_CLOSE);
+    macd_handle = iMACD(_Symbol, PERIOD_CURRENT, 12, 26, 9, PRICE_CLOSE);
+    atr_handle = iATR(_Symbol, PERIOD_CURRENT, 14);
+    bb_handle = iBands(_Symbol, PERIOD_CURRENT, 20, 0, 2.0, PRICE_CLOSE);
+    
+    // Initialize multi-timeframe indicators
+    if(UseMultiTimeframe)
+    {
+        ma_h4_handle = iMA(_Symbol, PERIOD_H4, 21, 0, MODE_EMA, PRICE_CLOSE);
+        rsi_h4_handle = iRSI(_Symbol, PERIOD_H4, 14, PRICE_CLOSE);
+        ma_d1_handle = iMA(_Symbol, PERIOD_D1, 55, 0, MODE_EMA, PRICE_CLOSE);
+    }
+    
+    // Check indicator handles
+    if(ma_fast_handle == INVALID_HANDLE || ma_slow_handle == INVALID_HANDLE || 
+       rsi_handle == INVALID_HANDLE || macd_handle == INVALID_HANDLE || 
+       atr_handle == INVALID_HANDLE || bb_handle == INVALID_HANDLE)
+    {
+        Print("❌ Error creating indicators!");
+        return INIT_FAILED;
+    }
+    
+    // Set arrays as series
+    ArraySetAsSeries(ma_fast, true);
+    ArraySetAsSeries(ma_slow, true);
+    ArraySetAsSeries(rsi, true);
+    ArraySetAsSeries(macd_main, true);
+    ArraySetAsSeries(macd_signal, true);
+    ArraySetAsSeries(atr, true);
+    ArraySetAsSeries(bb_upper, true);
+    ArraySetAsSeries(bb_lower, true);
+    ArraySetAsSeries(ma_h4, true);
+    ArraySetAsSeries(rsi_h4, true);
+    ArraySetAsSeries(ma_d1, true);
+    
+    // Initialize session balance and stats
+    session_start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    last_reset_date = TimeCurrent();
+    InitializeStats();
+    
+    Print("🚀 Professional AI BTC EA v3.0 initialized successfully!");
+    Print("📊 Symbol: ", _Symbol);
+    Print("💰 Starting Balance: $", DoubleToString(session_start_balance, 2));
+    Print("🔑 API Key: ", StringSubstr(API_KEY, 0, 10), "...");
+    
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    // Release indicators
+    IndicatorRelease(ma_fast_handle);
+    IndicatorRelease(ma_slow_handle);
+    IndicatorRelease(rsi_handle);
+    IndicatorRelease(macd_handle);
+    IndicatorRelease(atr_handle);
+    IndicatorRelease(bb_handle);
+    
+    if(UseMultiTimeframe)
+    {
+        IndicatorRelease(ma_h4_handle);
+        IndicatorRelease(rsi_h4_handle);
+        IndicatorRelease(ma_d1_handle);
+    }
+    
+    Print("👋 Professional AI BTC EA deinitialized. Reason: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    // Check emergency conditions first
+    if(UseEmergencyProtocol)
+        CheckEmergencyConditions();
+    
+    if(emergency_mode)
+    {
+        ManageEmergencyMode();
+        return;
+    }
+    
+    // Reset daily P&L at start of new day
+    CheckDailyReset();
+    
+    // Check daily limits
+    if(!CheckDailyLimits()) return;
+    
+    // Check trading filters
+    if(UseTradingHours && !IsWithinTradingHours()) return;
+    if(UseSpreadFilter && !CheckSpreadFilter()) return;
+    if(UseVolatilityFilter && !CheckVolatilityFilter()) return;
+    if(UseNewsFilter && IsHighImpactNewsTime()) return;
+    
+    // Check for new bar
+    if(!IsNewBar()) return;
+    
+    // Update market analysis
+    UpdateMarketAnalysis();
+    
+    // Check if it's time for analysis
+    if(TimeCurrent() - last_analysis_time < AnalysisInterval) return;
+    
+    // Update indicators
+    if(!UpdateIndicators()) return;
+    
+    // Get AI analysis
+    string ai_analysis = GetClaudeAnalysis();
+    
+    if(ai_analysis != "")
+    {
+        ParseAndExecuteAIDecision(ai_analysis);
+        last_analysis_time = TimeCurrent();
+    }
+    else if(UseAPIFallback && !api_available)
+    {
+        int fallback_signal = EnhancedFallbackSystem();
+        ExecuteTradeSignal(fallback_signal, "Enhanced Fallback");
+    }
+    
+    // Manage existing trades
+    ManageExistingTrades();
+    
+    // Update performance stats
+    UpdatePerformanceStats();
+}
+
+//+------------------------------------------------------------------+
+//| Enhanced Claude Analysis with Multi-TF                          |
+//+------------------------------------------------------------------+
+string GetClaudeAnalysis()
+{
+    string market_data = PrepareEnhancedMarketData();
+    string prompt = CreateEnhancedPrompt(market_data);
+    
+    string headers = "Content-Type: application/json\r\n";
+    headers += "x-api-key: " + API_KEY + "\r\n";
+    headers += "anthropic-version: " + API_VERSION + "\r\n";
+    
+    string json_body = "{";
+    json_body += "\"model\": \"claude-3-5-sonnet-20241022\",";
+    json_body += "\"max_tokens\": 2000,";
+    json_body += "\"temperature\": 0.1,";
+    json_body += "\"messages\": [";
+    json_body += "{";
+    json_body += "\"role\": \"user\",";
+    json_body += "\"content\": \"" + EscapeJsonString(prompt) + "\"";
+    json_body += "}";
+    json_body += "]";
+    json_body += "}";
+    
+    char post_data[];
+    char result[];
+    string result_headers;
+    
+    StringToCharArray(json_body, post_data, 0, StringLen(json_body));
+    
+    int timeout = 20000;
+    int res = WebRequest("POST", API_URL, headers, timeout, post_data, result, result_headers);
+    
+    if(res == 200)
+    {
+        string response = CharArrayToString(result);
+        consecutive_api_errors = 0;
+        api_available = true;
+        
+        if(EnableDebugMode)
+            Print("✅ AI Response received successfully");
+        
+        return ParseAPIResponse(response);
+    }
+    else
+    {
+        consecutive_api_errors++;
+        Print("❌ API Error. HTTP Code: ", res, " Errors: ", consecutive_api_errors);
+        
+        if(consecutive_api_errors >= 3)
+        {
+            api_available = false;
+            Print("🚫 API temporarily disabled");
+        }
+        
+        return "";
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Prepare Enhanced Market Data                                     |
+//+------------------------------------------------------------------+
+string PrepareEnhancedMarketData()
+{
+    string data = "";
+    
+    // Current market info
+    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    double spread = ask - bid;
+    
+    data += "🚀 PROFESSIONAL BTC MARKET ANALYSIS - " + TimeToString(TimeCurrent()) + "\n";
+    data += "Current Date: 2025-06-15 17:32:11 UTC\n";
+    data += "Trader: Anasss03\n\n";
+    
+    data += "📊 Current Market Data for " + _Symbol + ":\n";
+    data += "Bid: $" + DoubleToString(bid, 2) + " | Ask: $" + DoubleToString(ask, 2) + "\n";
+    data += "Spread: " + DoubleToString(spread / _Point, 0) + " points ($" + DoubleToString(spread, 2) + ")\n\n";
+    
+    // Technical indicators
+    data += "🔍 Technical Indicators (Current TF):\n";
+    if(ArraySize(ma_fast) > 0 && ArraySize(ma_slow) > 0)
+    {
+        data += "EMA21: $" + DoubleToString(ma_fast[0], 2) + " (prev: $" + DoubleToString(ma_fast[1], 2) + ")\n";
+        data += "EMA55: $" + DoubleToString(ma_slow[0], 2) + " (prev: $" + DoubleToString(ma_slow[1], 2) + ")\n";
+        data += "MA Cross: " + (ma_fast[0] > ma_slow[0] ? "Bullish" : "Bearish") + "\n";
+    }
+    
+    if(ArraySize(rsi) > 0)
+        data += "RSI(14): " + DoubleToString(rsi[0], 1) + " (prev: " + DoubleToString(rsi[1], 1) + ")\n";
+    
+    if(ArraySize(macd_main) > 0 && ArraySize(macd_signal) > 0)
+        data += "MACD: " + DoubleToString(macd_main[0], 6) + " | Signal: " + DoubleToString(macd_signal[0], 6) + "\n";
+    
+    if(ArraySize(atr) > 0)
+        data += "ATR(14): $" + DoubleToString(atr[0], 2) + " (" + DoubleToString(atr[0]/bid*100, 2) + "%)\n";
+    
+    if(ArraySize(bb_upper) > 0 && ArraySize(bb_lower) > 0)
+        data += "Bollinger: Upper $" + DoubleToString(bb_upper[0], 2) + " | Lower $" + DoubleToString(bb_lower[0], 2) + "\n";
+    
+    // Multi-timeframe analysis
+    if(UseMultiTimeframe && ArraySize(ma_h4) > 0 && ArraySize(rsi_h4) > 0)
+    {
+        data += "\n📈 Multi-Timeframe Analysis:\n";
+        data += "H4 EMA21: $" + DoubleToString(ma_h4[0], 2) + "\n";
+        data += "H4 RSI: " + DoubleToString(rsi_h4[0], 1) + "\n";
+        if(ArraySize(ma_d1) > 0)
+            data += "D1 EMA55: $" + DoubleToString(ma_d1[0], 2) + "\n";
+    }
+    
+    // Market structure
+    data += "\n🏗️ Market Structure:\n";
+    data += "Trend: " + market.trend_direction + "\n";
+    data += "Phase: " + market.market_phase + "\n";
+    data += "Volatility: " + DoubleToString(market.volatility_level, 2) + "\n";
+    data += "Support: $" + DoubleToString(market.support_level, 2) + "\n";
+    data += "Resistance: $" + DoubleToString(market.resistance_level, 2) + "\n";
+    
+    // Recent price action
+    data += "\n📊 Recent Price Action (Last 5 bars):\n";
+    for(int i = 0; i < 5; i++)
+    {
+        double open = iOpen(_Symbol, PERIOD_CURRENT, i);
+        double high = iHigh(_Symbol, PERIOD_CURRENT, i);
+        double low = iLow(_Symbol, PERIOD_CURRENT, i);
+        double close = iClose(_Symbol, PERIOD_CURRENT, i);
+        double change = ((close - open) / open) * 100;
+        
+        data += "Bar[" + IntegerToString(i) + "]: O=$" + DoubleToString(open, 2) + 
+                " H=$" + DoubleToString(high, 2) + " L=$" + DoubleToString(low, 2) + 
+                " C=$" + DoubleToString(close, 2) + " (" + DoubleToString(change, 2) + "%)\n";
+    }
+    
+    // Portfolio status
+    data += "\n💼 Portfolio Status:\n";
+    data += "Open Positions: " + IntegerToString(CountOpenTrades()) + "/" + IntegerToString(MaxTrades) + "\n";
+    data += "Portfolio Heat: " + DoubleToString(CalculatePortfolioHeat(), 1) + "%\n";
+    data += "Daily P/L: " + DoubleToString((AccountInfoDouble(ACCOUNT_BALANCE) - session_start_balance), 2) + "\n";
+    
+    // Performance metrics
+    data += "\n📈 AI Performance:\n";
+    data += "Win Rate: " + DoubleToString(stats.win_rate, 1) + "% (" + IntegerToString(stats.winning_trades) + "/" + IntegerToString(stats.total_trades) + ")\n";
+    data += "AI Accuracy: " + DoubleToString(stats.ai_accuracy, 1) + "% (" + IntegerToString(stats.correct_predictions) + "/" + IntegerToString(stats.total_predictions) + ")\n";
+    
+    return data;
+}
+
+//+------------------------------------------------------------------+
+//| Create Enhanced AI Prompt                                        |
+//+------------------------------------------------------------------+
+string CreateEnhancedPrompt(string market_data)
+{
+    string prompt = "You are a PROFESSIONAL Bitcoin trading AI analyst with advanced market analysis capabilities.\n\n";
+    prompt += "🎯 MISSION: Analyze the comprehensive market data and provide a HIGH-CONFIDENCE trading recommendation.\n\n";
+    prompt += market_data + "\n\n";
+    
+    prompt += "🧠 ANALYSIS FRAMEWORK:\n";
+    prompt += "1. Multi-timeframe trend analysis\n";
+    prompt += "2. Support/resistance levels\n";
+    prompt += "3. Momentum indicators (RSI, MACD)\n";
+    prompt += "4. Volatility assessment (ATR, Bollinger)\n";
+    prompt += "5. Market structure and phase\n";
+    prompt += "6. Risk-reward optimization\n\n";
+    
+    prompt += "🎯 TRADING RULES:\n";
+    prompt += "- Only recommend trades with confidence >= 7/10\n";
+    prompt += "- Consider multi-timeframe alignment\n";
+    prompt += "- Ensure proper risk-reward ratio (min 1:1.5)\n";
+    prompt += "- Account for current market volatility\n";
+    prompt += "- Respect support/resistance levels\n\n";
+    
+    prompt += "💰 BTC POINT SYSTEM:\n";
+    prompt += "- 100,000 points = $1,000 price move\n";
+    prompt += "- Current ATR: " + DoubleToString(atr[0], 2) + " = " + DoubleToString(atr[0] / _Point, 0) + " points\n";
+    prompt += "- Recommended SL: 30,000-150,000 points ($300-$1,500)\n";
+    prompt += "- Recommended TP: 50,000-300,000 points ($500-$3,000)\n\n";
+    
+    prompt += "📋 REQUIRED JSON RESPONSE FORMAT:\n";
+    prompt += "{\n";
+    prompt += "  \"signal\": \"BUY\", \"SELL\", or \"HOLD\",\n";
+    prompt += "  \"confidence\": 1-10 (integer),\n";
+    prompt += "  \"reasoning\": \"Detailed 2-3 sentence analysis\",\n";
+    prompt += "  \"stop_loss\": 30000-150000 (points),\n";
+    prompt += "  \"take_profit\": 50000-300000 (points),\n";
+    prompt += "  \"risk_level\": \"LOW\", \"MEDIUM\", or \"HIGH\",\n";
+    prompt += "  \"market_outlook\": \"BULLISH\", \"BEARISH\", or \"NEUTRAL\",\n";
+    prompt += "  \"key_levels\": {\n";
+    prompt += "    \"support\": price_level,\n";
+    prompt += "    \"resistance\": price_level\n";
+    prompt += "  }\n";
+    prompt += "}\n\n";
+    
+    prompt += "⚠️ IMPORTANT: Respond with ONLY valid JSON. No additional text.";
+    
+    return prompt;
+}
+
+//+------------------------------------------------------------------+
+//| Enhanced Fallback System                                         |
+//+------------------------------------------------------------------+
+int EnhancedFallbackSystem()
+{
+    if(!UpdateIndicators()) return 0;
+    
+    int bullish_votes = 0;
+    int bearish_votes = 0;
+    
+    // MA analysis (2 votes)
+    if(ArraySize(ma_fast) > 1 && ArraySize(ma_slow) > 1)
+    {
+        if(ma_fast[0] > ma_slow[0] && ma_fast[0] > ma_fast[1])
+            bullish_votes += 2;
+        else if(ma_fast[0] < ma_slow[0] && ma_fast[0] < ma_fast[1])
+            bearish_votes += 2;
+    }
+    
+    // RSI analysis (2 votes)
+    if(ArraySize(rsi) > 0)
+    {
+        if(rsi[0] < 30) bullish_votes += 2;
+        else if(rsi[0] > 70) bearish_votes += 2;
+        else if(rsi[0] > 50) bullish_votes += 1;
+        else bearish_votes += 1;
+    }
+    
+    // MACD analysis (1 vote)
+    if(ArraySize(macd_main) > 0 && ArraySize(macd_signal) > 0)
+    {
+        if(macd_main[0] > macd_signal[0]) bullish_votes += 1;
+        else bearish_votes += 1;
+    }
+    
+    // Bollinger Bands analysis (1 vote)
+    if(ArraySize(bb_upper) > 0 && ArraySize(bb_lower) > 0)
+    {
+        double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        if(current_price <= bb_lower[0]) bullish_votes += 1;
+        else if(current_price >= bb_upper[0]) bearish_votes += 1;
+    }
+    
+    // Multi-timeframe confirmation (2 votes)
+    if(UseMultiTimeframe && ArraySize(ma_h4) > 0 && ArraySize(rsi_h4) > 0)
+    {
+        double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        if(current_price > ma_h4[0] && rsi_h4[0] < 70) bullish_votes += 2;
+        else if(current_price < ma_h4[0] && rsi_h4[0] > 30) bearish_votes += 2;
+    }
+    
+    Print("📊 Fallback Analysis - Bullish: ", bullish_votes, " Bearish: ", bearish_votes);
+    
+    if(bullish_votes >= bearish_votes + 3) return 1;  // Strong BUY
+    if(bearish_votes >= bullish_votes + 3) return -1; // Strong SELL
+    return 0; // HOLD
+}
+
+//+------------------------------------------------------------------+
+//| Update Market Analysis                                           |
+//+------------------------------------------------------------------+
+void UpdateMarketAnalysis()
+{
+    if(!UpdateIndicators()) return;
+    
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    // Determine trend direction
+    if(ArraySize(ma_fast) > 0 && ArraySize(ma_slow) > 0)
+    {
+        if(ma_fast[0] > ma_slow[0])
+            market.trend_direction = ma_fast[0] > ma_fast[1] ? "Strong Bullish" : "Bullish";
+        else
+            market.trend_direction = ma_fast[0] < ma_fast[1] ? "Strong Bearish" : "Bearish";
+    }
+    
+    // Calculate volatility level
+    if(ArraySize(atr) > 2)
+    {
+        double avg_atr = (atr[0] + atr[1] + atr[2]) / 3.0;
+        market.volatility_level = atr[0] / avg_atr;
+    }
+    
+    // Determine market phase
+    if(ArraySize(rsi) > 0)
+    {
+        if(rsi[0] > 70) market.market_phase = "Overbought";
+        else if(rsi[0] < 30) market.market_phase = "Oversold";
+        else if(rsi[0] > 45 && rsi[0] < 55) market.market_phase = "Neutral";
+        else market.market_phase = "Trending";
+    }
+    
+    // Calculate support and resistance
+    double high_5 = iHigh(_Symbol, PERIOD_CURRENT, iHighest(_Symbol, PERIOD_CURRENT, MODE_HIGH, 20, 1));
+    double low_5 = iLow(_Symbol, PERIOD_CURRENT, iLowest(_Symbol, PERIOD_CURRENT, MODE_LOW, 20, 1));
+    
+    market.resistance_level = high_5;
+    market.support_level = low_5;
+    
+    // Simple sentiment score based on indicators
+    market.sentiment_score = 0.0;
+    if(ArraySize(rsi) > 0) market.sentiment_score += (rsi[0] - 50) / 50.0;
+    if(ArraySize(ma_fast) > 0 && ArraySize(ma_slow) > 0)
+        market.sentiment_score += (ma_fast[0] > ma_slow[0]) ? 0.5 : -0.5;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Portfolio Heat                                         |
+//+------------------------------------------------------------------+
+double CalculatePortfolioHeat()
+{
+    double total_risk = 0.0;
+    double account_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        string symbol = PositionGetSymbol(i);
+        if(symbol == _Symbol)
+        {
+            ulong position_ticket = PositionGetTicket(i);
+            if(PositionSelectByTicket(position_ticket) && 
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+                double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
+                double sl_price = PositionGetDouble(POSITION_SL);
+                double volume = PositionGetDouble(POSITION_VOLUME);
+                
+                if(sl_price > 0)
+                {
+                    double risk_per_trade = MathAbs(entry_price - sl_price) * volume;
+                    total_risk += risk_per_trade;
+                }
+            }
+        }
+    }
+    
+    return (total_risk / account_balance) * 100.0;
+}
+
+//+------------------------------------------------------------------+
+//| Check Emergency Conditions                                       |
+//+------------------------------------------------------------------+
+void CheckEmergencyConditions()
+{
+    double current_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double current_drawdown = ((session_start_balance - current_balance) / session_start_balance) * 100.0;
+    
+    // Check drawdown emergency
+    if(current_drawdown >= EmergencyDrawdownLimit)
+    {
+        if(!emergency_mode)
+        {
+            emergency_mode = true;
+            emergency_start_time = TimeCurrent();
+            CloseAllTrades("🚨 EMERGENCY: Max Drawdown Reached");
+        }
+    }
+    
+    // Check flash crash (price movement > 5% in 1 minute)
+    static double last_price = 0;
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    if(last_price > 0)
+    {
+        double price_change_percent = MathAbs((current_price - last_price) / last_price) * 100.0;
+        if(price_change_percent > 5.0)
+        {
+            Print("⚡ Flash crash detected: ", DoubleToString(price_change_percent, 2), "% price change");
+            CloseAllTrades("⚡ Flash Crash Protection");
+        }
+    }
+    
+    last_price = current_price;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Emergency Mode                                            |
+//+------------------------------------------------------------------+
+void ManageEmergencyMode()
+{
+    // Stay in emergency mode for at least 1 hour
+    if(TimeCurrent() - emergency_start_time < 3600)
+        return;
+    
+    // Check if conditions improved
+    double current_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double current_drawdown = ((session_start_balance - current_balance) / session_start_balance) * 100.0;
+    
+    if(current_drawdown < EmergencyDrawdownLimit * 0.8) // 20% buffer
+    {
+        emergency_mode = false;
+        Print("✅ Emergency mode deactivated - Drawdown: ", DoubleToString(current_drawdown, 2), "%");
+
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Enhanced News Filter                                             |
+//+------------------------------------------------------------------+
+bool IsHighImpactNewsTime()
+{
+    if(!UseNewsFilter) return false;
+    
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    
+    // Major news times (UTC)
+    // Fed announcements, CPI, Employment data typically at 12:30, 14:00, 18:00 UTC
+    int current_hour = dt.hour;
+    int current_minute = dt.min;
+    
+    // High impact news hours
+    if((current_hour == 12 && current_minute >= 25 && current_minute <= 35) ||
+       (current_hour == 14 && current_minute >= 0 && current_minute <= 15) ||
+       (current_hour == 18 && current_minute >= 0 && current_minute <= 15))
+    {
+        if(EnableDebugMode)
+            Print("📰 High impact news time detected - Trading paused");
+        return true;
+    }
+    
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Initialize Performance Statistics                                |
+//+------------------------------------------------------------------+
+void InitializeStats()
+{
+    stats.total_trades = 0;
+    stats.winning_trades = 0;
+    stats.losing_trades = 0;
+    stats.win_rate = 0.0;
+    stats.profit_factor = 0.0;
+    stats.max_drawdown = 0.0;
+    stats.current_drawdown = 0.0;
+    stats.total_profit = 0.0;
+    stats.ai_accuracy = 0.0;
+    stats.correct_predictions = 0;
+    stats.total_predictions = 0;
+}
+
+//+------------------------------------------------------------------+
+//| Update Performance Statistics                                    |
+//+------------------------------------------------------------------+
+void UpdatePerformanceStats()
+{
+    // Update basic stats
+    double current_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    stats.total_profit = current_balance - session_start_balance;
+    
+    // Calculate current drawdown
+    static double peak_balance = 0;
+    if(current_balance > peak_balance)
+        peak_balance = current_balance;
+    
+    stats.current_drawdown = ((peak_balance - current_balance) / peak_balance) * 100.0;
+    if(stats.current_drawdown > stats.max_drawdown)
+        stats.max_drawdown = stats.current_drawdown;
+    
+    // Calculate win rate
+    if(stats.total_trades > 0)
+        stats.win_rate = ((double)stats.winning_trades / (double)stats.total_trades) * 100.0;
+    
+    // Calculate AI accuracy
+    if(stats.total_predictions > 0)
+        stats.ai_accuracy = ((double)stats.correct_predictions / (double)stats.total_predictions) * 100.0;
+}
+
+//+------------------------------------------------------------------+
+//| Custom string trim functions                                     |
+//+------------------------------------------------------------------+
+string CustomStringTrimLeft(string str)
+{
+    int len = StringLen(str);
+    int start = 0;
+    
+    while(start < len && (StringGetCharacter(str, start) == ' ' || 
+          StringGetCharacter(str, start) == '\t' || 
+          StringGetCharacter(str, start) == '\n' || 
+          StringGetCharacter(str, start) == '\r'))
+    {
+        start++;
+    }
+    
+    return StringSubstr(str, start);
+}
+
+string CustomStringTrimRight(string str)
+{
+    int len = StringLen(str);
+    int end = len - 1;
+    
+    while(end >= 0 && (StringGetCharacter(str, end) == ' ' || 
+          StringGetCharacter(str, end) == '\t' || 
+          StringGetCharacter(str, end) == '\n' || 
+          StringGetCharacter(str, end) == '\r'))
+    {
+        end--;
+    }
+    
+    return StringSubstr(str, 0, end + 1);
+}
+
+string CustomStringTrim(string str)
+{
+    return CustomStringTrimLeft(CustomStringTrimRight(str));
+}
+
+//+------------------------------------------------------------------+
+//| Parse API response                                               |
+//+------------------------------------------------------------------+
+string ParseAPIResponse(string response)
+{
+    if(EnableDebugMode)
+    {
+        Print("=== API Response Debug ===");
+        Print("Response length: ", StringLen(response));
+        Print("First 500 chars: ", StringSubstr(response, 0, 500));
+    }
+    
+    int content_start = StringFind(response, "\"content\":");
+    if(content_start == -1)
+    {
+        Print("Content field not found in response");
+        return "";
+    }
+    
+    int array_start = StringFind(response, "[", content_start);
+    if(array_start == -1)
+    {
+        Print("Content array not found");
+        return "";
+    }
+    
+    int text_start = StringFind(response, "\"text\":", array_start);
+    if(text_start == -1)
+    {
+        Print("Text field not found in content");
+        return "";
+    }
+    
+    int quote_start = StringFind(response, "\"", text_start + 7);
+    if(quote_start == -1)
+    {
+        Print("Text value quote not found");
+        return "";
+    }
+    quote_start++;
+    
+    int quote_end = quote_start;
+    bool escaped = false;
+    
+    while(quote_end < StringLen(response))
+    {
+        ushort char_code = StringGetCharacter(response, quote_end);
+        
+        if(!escaped && char_code == '"')
+            break;
+            
+        escaped = (!escaped && char_code == '\\');
+        quote_end++;
+    }
+    
+    if(quote_end >= StringLen(response))
+    {
+        Print("Text value closing quote not found");
+        return "";
+    }
+    
+    string content = StringSubstr(response, quote_start, quote_end - quote_start);
+    
+    StringReplace(content, "\\n", "\n");
+    StringReplace(content, "\\\"", "\"");
+    StringReplace(content, "\\\\", "\\");
+    StringReplace(content, "\\r", "\r");
+    StringReplace(content, "\\t", "\t");
+    
+    if(EnableDebugMode)
+        Print("Extracted content: ", StringSubstr(content, 0, 500));
+    
+    return content;
+}
+
+//+------------------------------------------------------------------+
+//| Parse and execute AI decision                                    |
+//+------------------------------------------------------------------+
+void ParseAndExecuteAIDecision(string ai_response)
+{
+    if(EnableDebugMode)
+        Print("🤖 AI Response to parse: ", StringSubstr(ai_response, 0, 500));
+    
+    if(StringLen(ai_response) < 10)
+    {
+        Print("❌ AI response too short or empty");
+        return;
+    }
+    
+    int json_start = StringFind(ai_response, "{");
+    int json_end = -1;
+    
+    if(json_start != -1)
+    {
+        int brace_count = 1;
+        json_end = json_start + 1;
+        
+        while(json_end < StringLen(ai_response) && brace_count > 0)
+        {
+            ushort char_code = StringGetCharacter(ai_response, json_end);
+            if(char_code == '{') brace_count++;
+            else if(char_code == '}') brace_count--;
+            json_end++;
+        }
+        json_end--;
+    }
+    
+    string json_str = "";
+    if(json_start != -1 && json_end > json_start)
+    {
+        json_str = StringSubstr(ai_response, json_start, json_end - json_start + 1);
+    }
+    else
+    {
+        Print("⚠️ No valid JSON found, creating fallback analysis");
+        
+        string lower_response = ai_response;
+        StringToLower(lower_response);
+        
+        string signal = "HOLD";
+        int confidence = 5;
+        
+        if(StringFind(lower_response, "buy") != -1 || StringFind(lower_response, "bullish") != -1)
+        {
+            signal = "BUY";
+            confidence = 6;
+        }
+        else if(StringFind(lower_response, "sell") != -1 || StringFind(lower_response, "bearish") != -1)
+        {
+            signal = "SELL";
+            confidence = 6;
+        }
+        
+        json_str = "{\"signal\":\"" + signal + "\",\"confidence\":" + IntegerToString(confidence) + 
+                  ",\"reasoning\":\"Text analysis fallback\",\"stop_loss\":80000,\"take_profit\":160000,\"risk_level\":\"MEDIUM\"}";
+    }
+    
+    if(EnableDebugMode)
+        Print("📋 JSON to parse: ", json_str);
+    
+    // Parse JSON fields
+    string signal = ExtractJsonValue(json_str, "signal");
+    int confidence = (int)StringToInteger(ExtractJsonValue(json_str, "confidence"));
+    string reasoning = ExtractJsonValue(json_str, "reasoning");
+    int stop_loss = (int)StringToInteger(ExtractJsonValue(json_str, "stop_loss"));
+    int take_profit = (int)StringToInteger(ExtractJsonValue(json_str, "take_profit"));
+    string risk_level = ExtractJsonValue(json_str, "risk_level");
+    string market_outlook = ExtractJsonValue(json_str, "market_outlook");
+    
+    // Update AI prediction stats
+    stats.total_predictions++;
+    
+    Print("=== 🤖 AI Analysis ===");
+    Print("Signal: ", signal, " | Confidence: ", confidence, "/10");
+    Print("Risk Level: ", risk_level, " | Outlook: ", market_outlook);
+    Print("Reasoning: ", reasoning);
+    Print("SL: ", stop_loss, " points | TP: ", take_profit, " points");
+    
+    // Validate AI response
+    if(!ValidateAIResponse(signal, confidence, stop_loss, take_profit))
+    {
+        Print("⚠️ AI response validation failed, skipping trade");
+        return;
+    }
+    
+    // Set intelligent defaults
+    if(signal == "") signal = "HOLD";
+    if(confidence == 0) confidence = 5;
+    if(reasoning == "") reasoning = "AI Analysis";
+    
+    if(stop_loss == 0) 
+    {
+        stop_loss = (int)(atr[0] / _Point * 1.5);
+        stop_loss = (int)MathMax(50000.0, MathMin(200000.0, (double)stop_loss));
+    }
+    
+    if(take_profit == 0) 
+    {
+        take_profit = stop_loss * 2;
+    }
+    
+    if(risk_level == "") risk_level = "MEDIUM";
+    
+    // Execute trade based on AI recommendation
+    if(confidence >= MinConfidenceLevel && CountOpenTrades() < MaxTrades)
+    {
+        if(signal == "BUY")
+        {
+            ExecuteAITrade(ORDER_TYPE_BUY, stop_loss, take_profit, risk_level, reasoning);
+        }
+        else if(signal == "SELL")
+        {
+            ExecuteAITrade(ORDER_TYPE_SELL, stop_loss, take_profit, risk_level, reasoning);
+        }
+        else
+        {
+            Print("🤖 AI recommends HOLD - No trade executed");
+        }
+    }
+    else if(confidence < MinConfidenceLevel)
+    {
+        Print("⚠️ AI confidence too low (", confidence, "), skipping trade");
+    }
+    else
+    {
+        Print("⚠️ Maximum trades limit reached (", MaxTrades, "), skipping trade");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Validate AI Response                                             |
+//+------------------------------------------------------------------+
+bool ValidateAIResponse(string signal, int confidence, int sl, int tp)
+{
+    // Check signal validity
+    if(signal != "BUY" && signal != "SELL" && signal != "HOLD")
+    {
+        Print("❌ Invalid signal: ", signal);
+        return false;
+    }
+    
+    // Check confidence range
+    if(confidence < 1 || confidence > 10)
+    {
+        Print("❌ Invalid confidence: ", confidence);
+        return false;
+    }
+    
+    // Check SL/TP values
+    if(sl <= 0 || tp <= 0)
+    {
+        Print("❌ Invalid SL/TP values - SL: ", sl, " TP: ", tp);
+        return false;
+    }
+    
+    // Check Risk:Reward ratio
+    double rr_ratio = (double)tp / (double)sl;
+    if(rr_ratio < 1.0)
+    {
+        Print("❌ Poor Risk:Reward ratio: ", DoubleToString(rr_ratio, 2));
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract value from JSON string                                   |
+//+------------------------------------------------------------------+
+string ExtractJsonValue(string json, string key)
+{
+    string search_key = "\"" + key + "\":";
+    int start = StringFind(json, search_key);
+    if(start == -1) return "";
+    
+    start += StringLen(search_key);
+    
+    // Skip whitespace
+    while(start < StringLen(json) && (StringGetCharacter(json, start) == ' ' || StringGetCharacter(json, start) == '\t'))
+        start++;
+    
+    // Check if value is quoted
+    if(StringGetCharacter(json, start) == '"')
+    {
+        start++;
+        int end = StringFind(json, "\"", start);
+        if(end == -1) return "";
+        return StringSubstr(json, start, end - start);
+    }
+    else
+    {
+        // Numeric or boolean value
+        int end = start;
+        while(end < StringLen(json) && 
+              StringGetCharacter(json, end) != ',' && 
+              StringGetCharacter(json, end) != '}' && 
+              StringGetCharacter(json, end) != '\n')
+            end++;
+        return CustomStringTrim(StringSubstr(json, start, end - start));
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute AI-recommended trade                                     |
+//+------------------------------------------------------------------+
+void ExecuteAITrade(ENUM_ORDER_TYPE order_type, int sl_points, int tp_points, string risk_level, string reasoning)
+{
+    double price = (order_type == ORDER_TYPE_BUY) ? 
+                   SymbolInfoDouble(_Symbol, SYMBOL_ASK) : 
+                   SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    
+    // Validate and adjust SL/TP
+    sl_points = (int)MathMax((double)MinStopLoss, MathMin((double)MaxStopLoss, (double)sl_points));
+    
+    if(tp_points <= 0) 
+        tp_points = sl_points * 2;
+    else
+        tp_points = (int)MathMax((double)sl_points, (double)tp_points);
+    
+    tp_points = (int)MathMin((double)tp_points, (double)MaxStopLoss * 2);
+    
+    // Calculate lot size
+    double lot = CalculateAILotSize(sl_points, risk_level);
+    
+    if(lot > MaxLotSize)
+    {
+        Print("⚠️ Calculated lot (", lot, ") exceeds MaxLotSize (", MaxLotSize, "). Using MaxLotSize.");
+        lot = MaxLotSize;
+    }
+    
+    // Calculate SL and TP prices
+    double sl = 0, tp = 0;
+    if(sl_points > 0)
+    {
+        sl = (order_type == ORDER_TYPE_BUY) ? 
+             price - (double)sl_points * _Point : 
+             price + (double)sl_points * _Point;
+    }
+    
+    if(tp_points > 0)
+    {
+        tp = (order_type == ORDER_TYPE_BUY) ? 
+             price + (double)tp_points * _Point : 
+             price - (double)tp_points * _Point;
+    }
+    
+    // Validate SL and TP levels
+    long stop_level_long = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    double min_stop_level = (double)stop_level_long * _Point;
+    
+    if(order_type == ORDER_TYPE_BUY)
+    {
+        if(sl > 0 && price - sl < min_stop_level) sl = price - min_stop_level;
+        if(tp > 0 && tp - price < min_stop_level) tp = price + min_stop_level;
+    }
+    else
+    {
+        if(sl > 0 && sl - price < min_stop_level) sl = price + min_stop_level;
+        if(tp > 0 && price - tp < min_stop_level) tp = price - min_stop_level;
+    }
+    
+    string comment = "🤖AI:" + StringSubstr(reasoning, 0, 15);
+    
+    if(trade.PositionOpen(_Symbol, order_type, lot, price, sl, tp, comment))
+    {
+        // Update stats
+        stats.total_trades++;
+        
+        Print("✅ 🚀 AI Trade Executed Successfully! 🚀");
+        Print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        Print("📊 Type: ", order_type == ORDER_TYPE_BUY ? "BUY 📈" : "SELL 📉");
+        Print("💰 Lot Size: ", lot, " (Max: ", MaxLotSize, ")");
+        Print("🎯 Entry: $", DoubleToString(price, 2));
+        Print("🛡️ Stop Loss: $", DoubleToString(sl, 2), " (", sl_points/100.0, " USD risk)");
+        Print("💎 Take Profit: $", DoubleToString(tp, 2), " (", tp_points/100.0, " USD target)");
+        Print("⚖️ Risk Level: ", risk_level);
+        Print("🧠 Reasoning: ", reasoning);
+        Print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    }
+    else
+    {
+        Print("❌ Failed to execute AI trade: ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate AI lot size                                            |
+//+------------------------------------------------------------------+
+double CalculateAILotSize(int sl_points, string risk_level)
+{
+    double risk_multiplier = 1.0;
+    
+    if(risk_level == "LOW")
+        risk_multiplier = 0.7;
+    else if(risk_level == "HIGH")
+        risk_multiplier = 1.3;
+    else if(risk_level == "MEDIUM")
+        risk_multiplier = 1.0;
+    
+    double account_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double risk_amount = account_balance * RiskPercent * risk_multiplier / 100.0;
+    
+    if(sl_points > 0)
+    {
+        double pip_value_per_lot = 0.01; // 0.01 USD per point per lot for BTC
+        double sl_distance_in_dollars = (double)sl_points * pip_value_per_lot;
+        
+        double calculated_lot = risk_amount / sl_distance_in_dollars;
+        
+        double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+        double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+        
+        double final_lot = MathMin(calculated_lot, MaxLotSize);
+        final_lot = MathMax(min_lot, MathMin(max_lot, final_lot));
+        
+        return NormalizeDouble(final_lot, 2);
+    }
+    
+    return MathMin(LotSize, MaxLotSize);
+}
+
+//+------------------------------------------------------------------+
+//| Update indicators                                                |
+//+------------------------------------------------------------------+
+bool UpdateIndicators()
+{
+    bool success = true;
+    
+    success &= (CopyBuffer(ma_fast_handle, 0, 0, 3, ma_fast) > 0);
+    success &= (CopyBuffer(ma_slow_handle, 0, 0, 3, ma_slow) > 0);
+    success &= (CopyBuffer(rsi_handle, 0, 0, 3, rsi) > 0);
+    success &= (CopyBuffer(macd_handle, 0, 0, 3, macd_main) > 0);
+    success &= (CopyBuffer(macd_handle, 1, 0, 3, macd_signal) > 0);
+    success &= (CopyBuffer(atr_handle, 0, 0, 3, atr) > 0);
+    success &= (CopyBuffer(bb_handle, 1, 0, 3, bb_upper) > 0);
+    success &= (CopyBuffer(bb_handle, 2, 0, 3, bb_lower) > 0);
+    
+    if(UseMultiTimeframe)
+    {
+        success &= (CopyBuffer(ma_h4_handle, 0, 0, 3, ma_h4) > 0);
+        success &= (CopyBuffer(rsi_h4_handle, 0, 0, 3, rsi_h4) > 0);
+        success &= (CopyBuffer(ma_d1_handle, 0, 0, 3, ma_d1) > 0);
+    }
+    
+    return success;
+}
+
+//+------------------------------------------------------------------+
+//| Check for new bar                                                |
+//+------------------------------------------------------------------+
+bool IsNewBar()
+{
+    datetime current_time = iTime(_Symbol, PERIOD_CURRENT, 0);
+    if(current_time != last_bar_time)
+    {
+        last_bar_time = current_time;
+        return true;
+    }
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Check daily limits                                               |
+//+------------------------------------------------------------------+
+bool CheckDailyLimits()
+{
+    double current_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double daily_pnl = current_balance - session_start_balance;
+    double daily_pnl_percent = (daily_pnl / session_start_balance) * 100.0;
+    
+    if(daily_pnl_percent <= -MaxDailyLoss)
+    {
+        Print("🚫 Daily loss limit reached: ", DoubleToString(daily_pnl_percent, 2), "%");
+        CloseAllTrades("Daily loss limit");
+        
+        return false;
+    }
+    
+    if(daily_pnl_percent >= MaxDailyProfit)
+    {
+        Print("🎯 Daily profit target reached: ", DoubleToString(daily_pnl_percent, 2), "%");
+        CloseAllTrades("Daily profit target");
+        
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check daily reset                                                |
+//+------------------------------------------------------------------+
+void CheckDailyReset()
+{
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    
+    MqlDateTime last_dt;
+    TimeToStruct(last_reset_date, last_dt);
+    
+    if(dt.day != last_dt.day)
+    {
+        session_start_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+        daily_profit = 0.0;
+        daily_loss = 0.0;
+        last_reset_date = TimeCurrent();
+        consecutive_api_errors = 0;
+        api_available = true;
+        emergency_mode = false;
+        
+        // Reset daily stats
+        stats.total_trades = 0;
+        stats.winning_trades = 0;
+        stats.losing_trades = 0;
+        
+        Print("🌅 New Trading Day Started!");
+        Print("💰 Session Balance: $", DoubleToString(session_start_balance, 2));
+        
+     }
+}
+
+//+------------------------------------------------------------------+
+//| Check trading hours                                              |
+//+------------------------------------------------------------------+
+bool IsWithinTradingHours()
+{
+    if(!UseTradingHours) return true;
+    
+    MqlDateTime dt;
+    TimeToStruct(TimeCurrent(), dt);
+    
+    string start_parts[];
+    string end_parts[];
+    StringSplit(TradingStartTime, ':', start_parts);
+    StringSplit(TradingEndTime, ':', end_parts);
+    
+    int start_hour = (int)StringToInteger(start_parts[0]);
+    int start_min = (int)StringToInteger(start_parts[1]);
+    int end_hour = (int)StringToInteger(end_parts[0]);
+    int end_min = (int)StringToInteger(end_parts[1]);
+    
+    int current_time = dt.hour * 100 + dt.min;
+    int start_time = start_hour * 100 + start_min;
+    int end_time = end_hour * 100 + end_min;
+    
+    return (current_time >= start_time && current_time <= end_time);
+}
+
+//+------------------------------------------------------------------+
+//| Check spread filter                                              |
+//+------------------------------------------------------------------+
+bool CheckSpreadFilter()
+{
+    long spread_long = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+    double spread = (double)spread_long;
+    
+    if(spread > MaxSpread)
+    {
+        if(EnableDebugMode)
+            Print("⚠️ Spread too high: ", spread, " points ($", spread/100.0, ")");
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Check volatility filter                                          |
+//+------------------------------------------------------------------+
+bool CheckVolatilityFilter()
+{
+    if(ArraySize(atr) < 3) return true;
+    
+    double current_atr = atr[0];
+    double avg_atr = (atr[0] + atr[1] + atr[2]) / 3.0;
+    
+    if(current_atr > avg_atr * MaxATRMultiplier)
+    {
+        if(EnableDebugMode)
+            Print("⚠️ Volatility too high - ATR: ", current_atr, " vs Avg: ", avg_atr);
+        return false;
+    }
+    
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Close all trades                                                 |
+//+------------------------------------------------------------------+
+void CloseAllTrades(string reason)
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        string symbol = PositionGetSymbol(i);
+        if(symbol == _Symbol)
+        {
+            ulong position_ticket = PositionGetTicket(i);
+            if(PositionSelectByTicket(position_ticket) && 
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+                double profit = PositionGetDouble(POSITION_PROFIT);
+                
+                if(trade.PositionClose(position_ticket))
+                {
+                    // Update stats
+                    if(profit > 0)
+                        stats.winning_trades++;
+                    else if(profit < 0)
+                        stats.losing_trades++;
+                    
+                    Print("🚫 Position closed: ", position_ticket, " | Profit: $", DoubleToString(profit, 2), " | Reason: ", reason);
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Count open trades                                                |
+//+------------------------------------------------------------------+
+int CountOpenTrades()
+{
+    int count = 0;
+    for(int i = 0; i < PositionsTotal(); i++)
+    {
+        string symbol = PositionGetSymbol(i);
+        if(symbol == _Symbol)
+        {
+            ulong position_ticket = PositionGetTicket(i);
+            if(PositionSelectByTicket(position_ticket) && 
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+//+------------------------------------------------------------------+
+//| Manage existing trades                                           |
+//+------------------------------------------------------------------+
+void ManageExistingTrades()
+{
+    for(int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        string symbol = PositionGetSymbol(i);
+        if(symbol == _Symbol)
+        {
+            ulong position_ticket = PositionGetTicket(i);
+            if(PositionSelectByTicket(position_ticket) && 
+               PositionGetInteger(POSITION_MAGIC) == MagicNumber)
+            {
+                double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
+                double current_price = PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY ? 
+                                     SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                                     SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                
+                // Update trailing stop
+                if(UseTrailingStop)
+                    UpdateTrailingStop(position_ticket);
+                
+                // Move to breakeven
+                if(UseBreakEven)
+                    MoveToBreakEven(position_ticket, entry_price, current_price);
+                
+                // Check for partial close conditions
+                CheckPartialClose(position_ticket, entry_price, current_price);
+                
+                // Check for time-based exit
+                CheckTimeBasedExit(position_ticket);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Move to breakeven                                                |
+//+------------------------------------------------------------------+
+void MoveToBreakEven(ulong ticket, double entry_price, double current_price)
+{
+    if(!PositionSelectByTicket(ticket)) return;
+    
+    double current_sl = PositionGetDouble(POSITION_SL);
+    ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+    
+    double profit_points = 0;
+    bool should_move = false;
+    
+    if(pos_type == POSITION_TYPE_BUY)
+    {
+        profit_points = (current_price - entry_price) / _Point;
+        should_move = (profit_points >= 50000 && current_sl < entry_price);
+    }
+    else if(pos_type == POSITION_TYPE_SELL)
+    {
+        profit_points = (entry_price - current_price) / _Point;
+        should_move = (profit_points >= 50000 && current_sl > entry_price);
+    }
+    
+    if(should_move)
+    {
+        double new_sl = entry_price + (pos_type == POSITION_TYPE_BUY ? 1000 : -1000) * _Point;
+        
+        if(trade.PositionModify(ticket, new_sl, PositionGetDouble(POSITION_TP)))
+        {
+            Print("⚖️ Moved to breakeven - Ticket: ", ticket, " New SL: $", DoubleToString(new_sl, 2));
+            
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check partial close                                              |
+//+------------------------------------------------------------------+
+void CheckPartialClose(ulong ticket, double entry_price, double current_price)
+{
+    if(!PositionSelectByTicket(ticket)) return;
+    
+    ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+    double volume = PositionGetDouble(POSITION_VOLUME);
+    
+    double profit_points = 0;
+    
+    if(pos_type == POSITION_TYPE_BUY)
+        profit_points = (current_price - entry_price) / _Point;
+    else
+        profit_points = (entry_price - current_price) / _Point;
+    
+    // Close 50% at $1000 profit
+    if(profit_points >= 100000 && volume > SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
+    {
+        double close_volume = NormalizeDouble(volume * 0.5, 2);
+        
+        if(trade.PositionClosePartial(ticket, close_volume))
+        {
+            Print("💰 Partial close - Ticket: ", ticket, " Volume: ", close_volume, " Profit: $", profit_points/100.0);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check time-based exit                                            |
+//+------------------------------------------------------------------+
+void CheckTimeBasedExit(ulong ticket)
+{
+    if(!PositionSelectByTicket(ticket)) return;
+    
+    datetime open_time = (datetime)PositionGetInteger(POSITION_TIME);
+    datetime current_time = TimeCurrent();
+    
+    // Close position after 48 hours
+    if(current_time - open_time > 48 * 3600)
+    {
+        if(trade.PositionClose(ticket))
+        {
+            Print("⏰ Time-based exit - Ticket: ", ticket, " (48h limit)");
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Update trailing stop                                             |
+//+------------------------------------------------------------------+
+void UpdateTrailingStop(ulong ticket)
+{
+    if(!PositionSelectByTicket(ticket)) return;
+    
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
+    double current_sl = PositionGetDouble(POSITION_SL);
+    ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+    
+    double new_sl = current_sl;
+    
+    if(pos_type == POSITION_TYPE_BUY)
+    {
+        double trail_level = current_price - TrailingDistance * _Point;
+        if(trail_level > current_sl && trail_level > entry_price)
+            new_sl = trail_level;
+    }
+    else if(pos_type == POSITION_TYPE_SELL)
+    {
+        double trail_level = current_price + TrailingDistance * _Point;
+        if(trail_level < current_sl && trail_level < entry_price)
+            new_sl = trail_level;
+    }
+    
+    if(new_sl != current_sl)
+    {
+        if(trade.PositionModify(ticket, new_sl, PositionGetDouble(POSITION_TP)))
+        {
+            Print("🏃‍♂️ Trailing stop updated - Ticket: ", ticket, " New SL: $", DoubleToString(new_sl, 2));
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Execute trade signal                                             |
+//+------------------------------------------------------------------+
+void ExecuteTradeSignal(int signal, string source)
+{
+    if(signal == 1 && CountOpenTrades() < MaxTrades)
+    {
+        double lot = CalculateLotSize();
+        double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+        double sl = price - atr[0] * 1.5;
+        double tp = price + atr[0] * 3.0;
+        
+        string comment = "📊" + StringSubstr(source, 0, 15);
+        
+        if(trade.PositionOpen(_Symbol, ORDER_TYPE_BUY, lot, price, sl, tp, comment))
+        {
+            Print("✅ Fallback BUY executed - Source: ", source);
+        }
+    }
+    else if(signal == -1 && CountOpenTrades() < MaxTrades)
+    {
+        double lot = CalculateLotSize();
+        double price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        double sl = price + atr[0] * 1.5;
+        double tp = price - atr[0] * 3.0;
+        
+        string comment = "📊" + StringSubstr(source, 0, 15);
+        
+        if(trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lot, price, sl, tp, comment))
+        {
+            Print("✅ Fallback SELL executed - Source: ", source);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate standard lot size                                      |
+//+------------------------------------------------------------------+
+double CalculateLotSize()
+{
+    double account_balance = AccountInfoDouble(ACCOUNT_BALANCE);
+    double risk_amount = account_balance * RiskPercent / 100.0;
+    double sl_distance = atr[0] * 1.5;
+    
+    double pip_value_per_lot = 0.01;
+    double sl_in_points = sl_distance / _Point;
+    double sl_in_dollars = sl_in_points * pip_value_per_lot;
+    
+    double calculated_lot = risk_amount / sl_in_dollars;
+    
+    double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+    
+    double final_lot = MathMin(calculated_lot, MaxLotSize);
+    final_lot = MathMax(min_lot, MathMin(max_lot, final_lot));
+    
+    return NormalizeDouble(final_lot, 2);
+}
+
+//+------------------------------------------------------------------+
+//| Escape JSON string                                               |
+//+------------------------------------------------------------------+
+string EscapeJsonString(string str)
+{
+    StringReplace(str, "\\", "\\\\");
+    StringReplace(str, "\"", "\\\"");
+    StringReplace(str, "\n", "\\n");
+    StringReplace(str, "\r", "\\r");
+    StringReplace(str, "\t", "\\t");
+    return str;
+}
+
+//+------------------------------------------------------------------+
+//| END OF EA - Professional AI Trading System                      |
+//+------------------------------------------------------------------+
